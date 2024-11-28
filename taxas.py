@@ -1,9 +1,8 @@
 import pandas as pd
 from tkinter import Tk, filedialog, Label, Button, messagebox, ttk
 from openpyxl import load_workbook
-from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 import os
-
 
 class PlanilhaVendasETaxasApp:
     def __init__(self, root):
@@ -42,14 +41,14 @@ class PlanilhaVendasETaxasApp:
             title="Selecione a planilha de vendas", filetypes=[("Excel files", "*.xlsx")]
         )
         if self.arquivo_vendas:
-            self.label_vendas.config(text=self.arquivo_vendas.split("/")[-1])
+            self.label_vendas.config(text=os.path.basename(self.arquivo_vendas))
 
     def selecionar_planilha_taxas(self):
         self.arquivo_taxas = filedialog.askopenfilename(
             title="Selecione a planilha de taxas", filetypes=[("Excel files", "*.xlsx")]
         )
         if self.arquivo_taxas:
-            self.label_taxas.config(text=self.arquivo_taxas.split("/")[-1])
+            self.label_taxas.config(text=os.path.basename(self.arquivo_taxas))
 
     def processar_planilha(self):
         if not self.arquivo_vendas or not self.arquivo_taxas:
@@ -57,14 +56,12 @@ class PlanilhaVendasETaxasApp:
             return
 
         try:
-            # Exibindo mensagem de processamento
             self.label_status.config(text="Processando...")
             self.progress_bar["value"] = 0
-            self.progress_bar["maximum"] = 100
             self.root.update_idletasks()
 
             # Carregar as planilhas
-            df_vendas = pd.read_excel(self.arquivo_vendas, nrows=100000)
+            df_vendas = pd.read_excel(self.arquivo_vendas)
             df_taxas = pd.read_excel(self.arquivo_taxas)
 
             # Normalizar datas
@@ -81,12 +78,8 @@ class PlanilhaVendasETaxasApp:
                 col_taxa="Taxa"
             )
 
-            # Atualizar a barra de progresso
             self.progress_bar["value"] = 50
             self.root.update_idletasks()
-
-            # Calcular o Valor Bruto-Líquido
-            df_merged["Valor Bruto-Líquido"] = df_merged["Valor Bruto"] - df_merged["Valor Líquido"]
 
             # Gerar nome incremental para o arquivo de saída
             nome_arquivo = self.salvar_com_nome_incremental("planilha_calculo")
@@ -94,25 +87,19 @@ class PlanilhaVendasETaxasApp:
             # Salvando o arquivo processado com formatação
             self.salvar_com_formatacao(df_merged, nome_arquivo)
 
-            # Finalizando o processamento
             self.progress_bar["value"] = 100
             self.label_status.config(
                 text=f"Sucesso! Salvo como:\n'{os.path.abspath(nome_arquivo)}'",
                 fg="green"
             )
-            # Exibir mensagem de sucesso e chamar o método para limpar
             messagebox.showinfo("Sucesso", f"Arquivo processado com sucesso! Salvo como '{nome_arquivo}'.")
             self.zerar_estado()
-        except ValueError as e:
-            messagebox.showerror("Erro", f"Erro ao processar as planilhas: {e}")
-        except PermissionError:
-            messagebox.showerror("Erro", "O arquivo de saída está aberto. Feche o arquivo e tente novamente.")
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao processar as planilhas: {e}")
+            print(f"Erro ao processar as planilhas: {e}")
 
     def merge_planilhas(self, df_vendas, df_taxas, col_cartoes_vendas, col_cartoes_taxas, col_data_vendas,
                         col_data_inicial, col_data_final, col_parcelas_vendas, col_parcelas_taxas, col_taxa):
-        """Realiza o merge entre as planilhas de vendas e taxas."""
         df = df_vendas.merge(
             df_taxas,
             left_on=col_cartoes_vendas,
@@ -124,10 +111,9 @@ class PlanilhaVendasETaxasApp:
             (df[col_data_vendas] <= df[col_data_final]) &
             (df[col_parcelas_vendas] == df[col_parcelas_taxas])
         ]
-        return df[[*df_vendas.columns, col_taxa]]  # Somente as colunas da planilha de vendas + coluna "Taxa"
+        return df[[*df_vendas.columns, col_taxa]]
 
     def salvar_com_nome_incremental(self, nome_base):
-        """Gera um nome incremental para o arquivo de saída."""
         contador = 1
         nome_arquivo = f"{nome_base}({contador}).xlsx"
         while os.path.exists(nome_arquivo):
@@ -137,31 +123,78 @@ class PlanilhaVendasETaxasApp:
 
     def salvar_com_formatacao(self, dataframe, output_file):
         dataframe.to_excel(output_file, index=False, engine="openpyxl")
-
-        # Carregar o arquivo salvo para adicionar formatação
         wb = load_workbook(output_file)
         ws = wb.active
 
-        # Formatar a altura da linha 1
+        # Formatar a altura da linha 1 (cabeçalho)
         ws.row_dimensions[1].height = 48
 
-        # Formatar a coluna D como dd/mm/yyyy
-        for cell in ws["D"]:
-            if cell.row > 1:  # Ignorar o cabeçalho
-                cell.number_format = "dd/mm/yyyy"
+        # Adicionar fórmula "=M-O" na coluna correspondente
+        col_valor_bruto = "M"  # Supondo que "Valor Bruto" está na coluna M
+        col_valor_liquido = "O"  # Supondo que "Valor Líquido" está na coluna O
+        col_valor_resultado = "P"  # Próxima coluna para o resultado (ajuste conforme necessário)
+
+        ws[f"{col_valor_resultado}1"] = "Retenção"  # Cabeçalho da nova coluna
+
+        for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
+            ws[f"{col_valor_resultado}{row}"].value = f"={col_valor_bruto}{row}-{col_valor_liquido}{row}"
+
+        # Nova Coluna Comissão Aplicada
+
+        col_valor_bruto = "M"  # Supondo que "Valor Bruto" está na coluna M
+        col_retenção = "P"  # Supondo que "Retenção" está na coluna P
+        col_comissão_aplicada = "R"  # Nova coluna para comissão aplicada
+
+        # Adicionando o cabeçalho da nova coluna
+        ws[f"{col_comissão_aplicada}1"] = "Comissão Aplicada"  # Cabeçalho da nova coluna
+
+        # Preenchendo a fórmula em cada linha da coluna col_comissão_aplicada
+        for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
+            ws[f"{col_comissão_aplicada}{row}"].value = f"={col_retenção}{row}*100/{col_valor_bruto}{row}"
+
+        # Nova Coluna Valor Líquido Contratado
+        col_taxa = "Q"  # Supondo que "Taxa" está na coluna Q
+        col_valor_bruto = "M"  # Supondo que "Valor Bruto" está na coluna M
+        col_valor_liquido_contratado = "S"
+
+        # Adicionando o cabeçalho da nova coluna
+        ws[f"{col_valor_liquido_contratado}1"] = "Valor Líquido Contatado"  # Cabeçalho da nova coluna
+
+        # Preenchendo a fórmula em cada linha da coluna col_valor_liquido_contratado
+        for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
+            ws[f"{col_valor_liquido_contratado}{row}"].value = f"=100-{col_taxa}{row}/100*{col_valor_bruto}{row}"
+
+        # Nova Coluna Diferença
+        col_valor_liquido_contratado = "S"  # Valor do Valor Liquido Contratado
+        col_valor_liquido = "O"  # Supondo que "Valor Bruto" está na coluna M
+        col_diferença = "T"
+
+        # Adicionando o cabeçalho da nova coluna
+        ws[f"{col_diferença}1"] = "Diferença"  # Cabeçalho da nova coluna
+
+        # Preenchendo a fórmula da coluna "Diferença"
+        for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
+            ws[f"{col_diferença}{row}"].value = f"={col_valor_liquido_contratado}{row}-{col_valor_liquido}{row}"
+
+        # Nova Coluna Indébito
+        col_indébito = "U"
+
+        # Adicionando o cabeçalho da nova coluna
+        ws[f"{col_indébito}1"] = "Indébito"  # Cabeçalho da nova coluna
+
+        # Preenchendo a fórmula condicional na coluna "Indébito"
+        for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
+            ws[f"{col_indébito}{row}"].value = f"=IF({col_diferença}{row}<=0,0,{col_diferença}{row})"
+
 
         # Ajustar a largura das colunas automaticamente
         for column in ws.columns:
             max_length = 0
-            column_letter = column[0].column_letter  # Letra da coluna
+            column_letter = column[0].column_letter
             for cell in column:
-                try:
-                    if cell.value:
-                        max_length = max(max_length, len(str(cell.value)))
-                except Exception:
-                    pass
-            adjusted_width = max_length + 2
-            ws.column_dimensions[column_letter].width = adjusted_width
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[column_letter].width = max_length + 2
 
         # Aplicar formatação na linha 1 (cabeçalho)
         for cell in ws[1]:
@@ -169,11 +202,26 @@ class PlanilhaVendasETaxasApp:
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.fill = PatternFill(start_color="7FD4DE", end_color="7FD4DE", fill_type="solid")
 
-        # Salvar novamente com a formatação aplicada
+        # Criando o estilo de borda preta
+        thin_border = Border(
+            left=Side(style="thin", color="000000"),
+            right=Side(style="thin", color="000000"),
+            top=Side(style="thin", color="000000"),
+            bottom=Side(style="thin", color="000000")
+        )
+
+        # Aplicando bordas aos cabeçalhos (linha 1)
+        for cell in ws[1]:
+            cell.border = Border(
+                left=Side(style="thin", color="000000"),  # Borda esquerda
+                right=Side(style="thin", color="000000"),  # Borda direita
+                top=Side(style="thin", color="000000"),  # Borda superior
+                bottom=Side(style="thin", color="000000")  # Borda inferior
+            )
+
         wb.save(output_file)
 
     def zerar_estado(self):
-        """Reseta o programa para estado inicial."""
         self.arquivo_vendas = None
         self.arquivo_taxas = None
         self.label_vendas.config(text="Nenhum arquivo selecionado")
