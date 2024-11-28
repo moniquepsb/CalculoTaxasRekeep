@@ -2,7 +2,9 @@ import pandas as pd
 from tkinter import Tk, filedialog, Label, Button, messagebox, ttk
 from openpyxl import load_workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 import os
+
 
 class PlanilhaVendasETaxasApp:
     def __init__(self, root):
@@ -69,14 +71,18 @@ class PlanilhaVendasETaxasApp:
             df_taxas["Data Inicial"] = pd.to_datetime(df_taxas["Data Inicial"], errors="coerce")
             df_taxas["Data Final"] = pd.to_datetime(df_taxas["Data Final"], errors="coerce")
 
-            # Realizar o merge
-            df_merged = self.merge_planilhas(
+            # Consultar e preencher taxas
+            df_vendas_com_taxas = self.consulta_e_preenche_taxas(
                 df_vendas, df_taxas,
                 col_cartoes_vendas="Cartões", col_cartoes_taxas="Cartão",
                 col_data_vendas="Data", col_data_inicial="Data Inicial", col_data_final="Data Final",
-                col_parcelas_vendas="Parcelas", col_parcelas_taxas="Parcelas",
+                col_parcelas_vendas="Total de Parcelas", col_parcelas_taxas="Parcelas",
                 col_taxa="Taxa"
             )
+
+            # Remover a coluna "Taxa Correspondente" e mover os dados para a Coluna S com título "Comissão Contratada"
+            if "Taxa Correspondente" in df_vendas_com_taxas.columns:
+                df_vendas_com_taxas.rename(columns={"Taxa Correspondente": "Comissão Contratada"}, inplace=True)
 
             self.progress_bar["value"] = 50
             self.root.update_idletasks()
@@ -85,7 +91,7 @@ class PlanilhaVendasETaxasApp:
             nome_arquivo = self.salvar_com_nome_incremental("planilha_calculo")
 
             # Salvando o arquivo processado com formatação
-            self.salvar_com_formatacao(df_merged, nome_arquivo)
+            self.salvar_com_formatacao(df_vendas_com_taxas, nome_arquivo)
 
             self.progress_bar["value"] = 100
             self.label_status.config(
@@ -98,20 +104,24 @@ class PlanilhaVendasETaxasApp:
             messagebox.showerror("Erro", f"Erro ao processar as planilhas: {e}")
             print(f"Erro ao processar as planilhas: {e}")
 
-    def merge_planilhas(self, df_vendas, df_taxas, col_cartoes_vendas, col_cartoes_taxas, col_data_vendas,
-                        col_data_inicial, col_data_final, col_parcelas_vendas, col_parcelas_taxas, col_taxa):
-        df = df_vendas.merge(
-            df_taxas,
-            left_on=col_cartoes_vendas,
-            right_on=col_cartoes_taxas,
-            how="inner"
-        )
-        df = df[
-            (df[col_data_vendas] >= df[col_data_inicial]) &
-            (df[col_data_vendas] <= df[col_data_final]) &
-            (df[col_parcelas_vendas] == df[col_parcelas_taxas])
-        ]
-        return df[[*df_vendas.columns, col_taxa]]
+    def consulta_e_preenche_taxas(self, df_vendas, df_taxas, col_cartoes_vendas, col_cartoes_taxas, col_data_vendas,
+                                  col_data_inicial, col_data_final, col_parcelas_vendas, col_parcelas_taxas, col_taxa):
+        """
+        Preenche o DataFrame de Vendas com as taxas correspondentes baseando-se nas condições de match.
+        """
+        df_vendas['Taxa Correspondente'] = None
+
+        for index, row in df_vendas.iterrows():
+            taxa_match = df_taxas[
+                (df_taxas[col_data_inicial] <= row[col_data_vendas]) &
+                (df_taxas[col_data_final] >= row[col_data_vendas]) &
+                (df_taxas[col_parcelas_taxas] == row[col_parcelas_vendas]) &
+                (df_taxas[col_cartoes_taxas] == row[col_cartoes_vendas])
+            ]
+            if not taxa_match.empty:
+                df_vendas.at[index, 'Taxa Correspondente'] = taxa_match.iloc[0][col_taxa]
+
+        return df_vendas
 
     def salvar_com_nome_incremental(self, nome_base):
         contador = 1
@@ -126,24 +136,21 @@ class PlanilhaVendasETaxasApp:
         wb = load_workbook(output_file)
         ws = wb.active
 
-        # Formatar a altura da linha 1 (cabeçalho)
-        ws.row_dimensions[1].height = 48
 
-        # Adicionar fórmula "=M-O" na coluna correspondente
+     # Adicionar fórmula "=M-O" na coluna correspondente
         col_valor_bruto = "M"  # Supondo que "Valor Bruto" está na coluna M
         col_valor_liquido = "O"  # Supondo que "Valor Líquido" está na coluna O
-        col_valor_resultado = "P"  # Próxima coluna para o resultado (ajuste conforme necessário)
+        col_retenção = "R"  # Próxima coluna para o resultado (ajuste conforme necessário)
 
-        ws[f"{col_valor_resultado}1"] = "Retenção"  # Cabeçalho da nova coluna
+        ws[f"{col_retenção}1"] = "Retenção"  # Cabeçalho da nova coluna
 
         for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
-            ws[f"{col_valor_resultado}{row}"].value = f"={col_valor_bruto}{row}-{col_valor_liquido}{row}"
+            ws[f"{col_retenção}{row}"].value = f"={col_valor_bruto}{row}-{col_valor_liquido}{row}"
 
         # Nova Coluna Comissão Aplicada
-
         col_valor_bruto = "M"  # Supondo que "Valor Bruto" está na coluna M
-        col_retenção = "P"  # Supondo que "Retenção" está na coluna P
-        col_comissão_aplicada = "R"  # Nova coluna para comissão aplicada
+        col_retenção = "R"  # Supondo que "Retenção" está na coluna P
+        col_comissão_aplicada = "S"  # Nova coluna para comissão aplicada
 
         # Adicionando o cabeçalho da nova coluna
         ws[f"{col_comissão_aplicada}1"] = "Comissão Aplicada"  # Cabeçalho da nova coluna
@@ -155,19 +162,19 @@ class PlanilhaVendasETaxasApp:
         # Nova Coluna Valor Líquido Contratado
         col_taxa = "Q"  # Supondo que "Taxa" está na coluna Q
         col_valor_bruto = "M"  # Supondo que "Valor Bruto" está na coluna M
-        col_valor_liquido_contratado = "S"
+        col_valor_liquido_contratado = "T"
 
         # Adicionando o cabeçalho da nova coluna
         ws[f"{col_valor_liquido_contratado}1"] = "Valor Líquido Contatado"  # Cabeçalho da nova coluna
 
         # Preenchendo a fórmula em cada linha da coluna col_valor_liquido_contratado
         for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
-            ws[f"{col_valor_liquido_contratado}{row}"].value = f"=100-{col_taxa}{row}/100*{col_valor_bruto}{row}"
+            ws[f"{col_valor_liquido_contratado}{row}"].value = f"=(100-{col_taxa}{row})/100*{col_valor_bruto}{row}"
 
         # Nova Coluna Diferença
-        col_valor_liquido_contratado = "S"  # Valor do Valor Liquido Contratado
+        col_valor_liquido_contratado = "T"  # Valor do Valor Liquido Contratado
         col_valor_liquido = "O"  # Supondo que "Valor Bruto" está na coluna M
-        col_diferença = "T"
+        col_diferença = "U"
 
         # Adicionando o cabeçalho da nova coluna
         ws[f"{col_diferença}1"] = "Diferença"  # Cabeçalho da nova coluna
@@ -177,7 +184,7 @@ class PlanilhaVendasETaxasApp:
             ws[f"{col_diferença}{row}"].value = f"={col_valor_liquido_contratado}{row}-{col_valor_liquido}{row}"
 
         # Nova Coluna Indébito
-        col_indébito = "U"
+        col_indébito = "V"
 
         # Adicionando o cabeçalho da nova coluna
         ws[f"{col_indébito}1"] = "Indébito"  # Cabeçalho da nova coluna
@@ -185,39 +192,35 @@ class PlanilhaVendasETaxasApp:
         # Preenchendo a fórmula condicional na coluna "Indébito"
         for row in range(2, ws.max_row + 1):  # Começa na linha 2 para evitar o cabeçalho
             ws[f"{col_indébito}{row}"].value = f"=IF({col_diferença}{row}<=0,0,{col_diferença}{row})"
+        # Formatar a altura da linha 1 (cabeçalho)
+        ws.row_dimensions[1].height = 48
 
-
-        # Ajustar a largura das colunas automaticamente
-        for column in ws.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
-                if cell.value:
-                    max_length = max(max_length, len(str(cell.value)))
-            ws.column_dimensions[column_letter].width = max_length + 2
-
-        # Aplicar formatação na linha 1 (cabeçalho)
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.fill = PatternFill(start_color="7FD4DE", end_color="7FD4DE", fill_type="solid")
-
-        # Criando o estilo de borda preta
+        # Formatação de cabeçalho
         thin_border = Border(
             left=Side(style="thin", color="000000"),
             right=Side(style="thin", color="000000"),
             top=Side(style="thin", color="000000"),
             bottom=Side(style="thin", color="000000")
         )
-
-        # Aplicando bordas aos cabeçalhos (linha 1)
         for cell in ws[1]:
-            cell.border = Border(
-                left=Side(style="thin", color="000000"),  # Borda esquerda
-                right=Side(style="thin", color="000000"),  # Borda direita
-                top=Side(style="thin", color="000000"),  # Borda superior
-                bottom=Side(style="thin", color="000000")  # Borda inferior
-            )
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = PatternFill(start_color="7FD4DE", end_color="7FD4DE", fill_type="solid")
+            cell.border = thin_border
+
+        # Formatar a Coluna D para exibir datas no formato dd/mm/yyyy
+        for row in ws.iter_rows(min_col=4, max_col=4, min_row=2, max_row=ws.max_row):
+            for cell in row:
+                cell.number_format = "dd/mm/yyyy"
+
+        # Ajustar largura de todas as colunas
+        for col in ws.columns:
+            max_length = 0
+            col_letter = get_column_letter(col[0].column)  # Letra da coluna
+            for cell in col:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = max_length + 2
 
         wb.save(output_file)
 
